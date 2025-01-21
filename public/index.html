@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Personal Replit</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <style>
+    :root {
+      --bg-color: #ffffff;
+      --text-color: #000000;
+      --sidebar-bg: #f4f4f4;
+      --editor-bg: #f9f9f9;
+    }
+
+    [data-theme="dark"] {
+      --bg-color: #1e1e1e;
+      --text-color: #ffffff;
+      --sidebar-bg: #2d2d2d;
+      --editor-bg: #272727;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #sidebar {
+      width: 250px;
+      background-color: var(--sidebar-bg);
+      padding: 10px;
+      overflow-y: auto;
+      border-right: 1px solid #ccc;
+    }
+
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+    }
+
+    #file-list div {
+      padding: 5px;
+      cursor: pointer;
+      border-bottom: 1px solid #ccc;
+    }
+
+    #file-list div:hover {
+      background-color: #ddd;
+    }
+
+    #editor {
+      flex: 1;
+      background-color: var(--editor-bg);
+      border: 1px solid #ccc;
+      margin-top: 10px;
+      border-radius: 5px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    button, input {
+      margin: 0 5px;
+      padding: 5px 10px;
+      border: none;
+      border-radius: 5px;
+    }
+
+    button {
+      background-color: #007bff;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #0056b3;
+    }
+
+    .dark-mode-btn {
+      background-color: #333;
+      color: #fff;
+    }
+
+    .dark-mode-btn:hover {
+      background-color: #555;
+    }
+  </style>
+</head>
+<body data-theme="light">
+  <div id="sidebar">
+    <h2>Files</h2>
+    <button onclick="createFile()">New File</button>
+    <button onclick="deleteFile()">Delete File</button>
+    <div id="file-list"></div>
+  </div>
+  <div id="main">
+    <header>
+      <h1>Personal Replit</h1>
+      <div>
+        <input id="repo-url" type="text" placeholder="Enter repo URL">
+        <button onclick="cloneRepo()">Clone</button>
+        <button class="dark-mode-btn" onclick="toggleDarkMode()">Dark Mode</button>
+      </div>
+    </header>
+    <div id="editor"></div>
+    <button onclick="saveFile()">Save File</button>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.34.1/min/vs/loader.min.js"></script>
+  <script>
+    const socket = io();
+    let editor, currentFile = null;
+
+    // Monaco Editor Initialization
+    require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.34.1/min/vs' } });
+    require(['vs/editor/editor.main'], function () {
+      editor = monaco.editor.create(document.getElementById('editor'), {
+        value: "// Select a file to start editing",
+        language: 'javascript',
+        theme: "vs-light",
+        automaticLayout: true
+      });
+    });
+
+    // Toggle Dark Mode
+    function toggleDarkMode() {
+      const body = document.body;
+      const theme = body.dataset.theme === "dark" ? "light" : "dark";
+      body.dataset.theme = theme;
+      editor.updateOptions({ theme: theme === "dark" ? "vs-dark" : "vs-light" });
+    }
+
+    // Fetch File List
+    function fetchFiles() {
+      fetch("/files")
+        .then(res => res.json())
+        .then(files => {
+          const fileList = document.getElementById("file-list");
+          fileList.innerHTML = files.map(file => `
+            <div onclick="openFile('${file.name}')">
+              ${file.name}
+            </div>`).join("");
+        });
+    }
+
+    // Open File
+    function openFile(filePath) {
+      currentFile = filePath;
+      fetch(`/file?path=${filePath}`)
+        .then(res => res.text())
+        .then(content => editor.setValue(content));
+    }
+
+    // Save File
+    function saveFile() {
+      if (!currentFile) return alert("No file selected!");
+      const content = editor.getValue();
+
+      fetch("/file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath: currentFile, content })
+      }).then(() => alert("File saved!"));
+
+      socket.emit("fileChange", { filePath: currentFile, content });
+    }
+
+    // Clone Repository
+    function cloneRepo() {
+      const repoUrl = document.getElementById("repo-url").value;
+      fetch("/clone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repoUrl })
+      }).then(() => alert("Repository cloned!"));
+    }
+
+    // Create New File
+    function createFile() {
+      const fileName = prompt("Enter file name:");
+      if (!fileName) return;
+
+      fetch("/file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath: fileName, content: "" })
+      }).then(() => fetchFiles());
+    }
+
+    // Delete Selected File
+    function deleteFile() {
+      if (!currentFile) return alert("No file selected!");
+      if (!confirm(`Are you sure you want to delete ${currentFile}?`)) return;
+
+      fetch("/file", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath: currentFile })
+      }).then(() => {
+        currentFile = null;
+        editor.setValue("");
+        fetchFiles();
+      });
+    }
+
+    // Listen for File Updates
+    socket.on("fileUpdate", data => {
+      if (data.filePath === currentFile) {
+        alert(`File updated: ${data.filePath}`);
+        fetch(`/file?path=${data.filePath}`)
+          .then(res => res.text())
+          .then(content => editor.setValue(content));
+      }
+    });
+
+    fetchFiles();
+  </script>
+</body>
+</html>
