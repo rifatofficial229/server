@@ -21,6 +21,8 @@ const USERNAME = process.env.AUTH_USERNAME || "rifat";
 const PASSWORD = process.env.AUTH_PASSWORD || "mmrifat";
 const REPO_URL = process.env.REPO_URL || ""; // Default repository URL for scheduling
 
+let logs = []; // Store logs in an array
+
 // Middleware
 app.use(bodyParser.json());
 app.use(express.static("public"));
@@ -59,6 +61,40 @@ app.post("/clone", async (req, res) => {
   }
 });
 
+// Run Repository Endpoint
+app.post("/run", async (req, res) => {
+  const repoDir = getRepoPath();
+
+  try {
+    if (!fsExtra.existsSync(repoDir)) {
+      return res.status(400).json({ error: "Repository not found. Please clone a repository first." });
+    }
+
+    // Define the command to run in the cloned repository
+    const command = "node index.js"; // Adjust based on your repository's entry point
+
+    exec(command, { cwd: repoDir }, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error running repository: ${stderr}`);
+        logs.push({ type: "error", message: stderr });
+        return res.status(500).json({ error: `Failed to run repository: ${stderr}` });
+      }
+      console.log(`Repository Output: ${stdout}`);
+      logs.push({ type: "success", message: stdout });
+      res.json({ message: "Repository ran successfully!", output: stdout });
+    });
+  } catch (error) {
+    console.error("Error running repository:", error.message);
+    logs.push({ type: "error", message: error.message });
+    res.status(500).json({ error: "Failed to run repository." });
+  }
+});
+
+// Get Logs Endpoint
+app.get("/logs", (req, res) => {
+  res.json(logs);
+});
+
 // List Files Endpoint
 app.get("/files", async (req, res) => {
   try {
@@ -90,12 +126,20 @@ app.get("/file", async (req, res) => {
     const repoDir = getRepoPath();
     const absolutePath = path.join(repoDir, filePath);
 
-    if (!await fsExtra.pathExists(absolutePath)) {
-      return res.status(404).json({ error: "File not found." });
+    // Check if the path is a directory
+    const stat = await fsExtra.stat(absolutePath);
+
+    if (stat.isDirectory()) {
+      return res.status(400).json({ error: "Cannot read a directory. Please select a file." });
     }
 
-    const fileContent = await fsExtra.readFile(absolutePath, "utf8");
-    res.send(fileContent);
+    // If it's a file, read the content
+    if (await fsExtra.pathExists(absolutePath)) {
+      const fileContent = await fsExtra.readFile(absolutePath, "utf8");
+      res.send(fileContent);
+    } else {
+      return res.status(404).json({ error: "File not found." });
+    }
   } catch (error) {
     console.error("Error reading file:", error.message);
     res.status(500).json({ error: "Failed to read file." });
@@ -146,32 +190,6 @@ app.delete("/file", async (req, res) => {
   } catch (error) {
     console.error("Error deleting file:", error.message);
     res.status(500).json({ error: "Failed to delete file." });
-  }
-});
-
-// Run Repository Endpoint
-app.post("/run", async (req, res) => {
-  const repoDir = getRepoPath();
-
-  try {
-    if (!fsExtra.existsSync(repoDir)) {
-      return res.status(400).json({ error: "Repository not found. Please clone a repository first." });
-    }
-
-    // Define the command to run in the cloned repository
-    const command = "node index.js"; // Adjust based on your repository's entry point
-
-    exec(command, { cwd: repoDir }, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Error running repository: ${stderr}`);
-        return res.status(500).json({ error: `Failed to run repository: ${stderr}` });
-      }
-      console.log(`Repository Output: ${stdout}`);
-      res.json({ message: "Repository ran successfully!", output: stdout });
-    });
-  } catch (error) {
-    console.error("Error running repository:", error.message);
-    res.status(500).json({ error: "Failed to run repository." });
   }
 });
 
