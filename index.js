@@ -1,108 +1,160 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const socketIO = require("socket.io");
-const http = require("http");
-const simpleGit = require("simple-git");
-const fs = require("fs");
+const fsExtra = require("fs-extra"); // Enhanced file system handling
 const path = require("path");
+const git = require("simple-git");
+const http = require("http");
+const { Server } = require("socket.io");
 const basicAuth = require("basic-auth");
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIO(server);
+const io = new Server(server);
 
-// Configuration
 const PORT = process.env.PORT || 3000;
-const WORKSPACE_DIR = path.join(__dirname, "workspace");
 
-// Create workspace directory if it doesn't exist
-if (!fs.existsSync(WORKSPACE_DIR)) {
-  fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
-}
-
-// Middleware for basic authentication
-app.use((req, res, next) => {
+// Basic Auth Middleware
+const authMiddleware = (req, res, next) => {
   const user = basicAuth(req);
-  if (!user || user.name !== "rifat" || user.pass !== "mmrifat") {
+  const username = "rifat";
+  const password = "mmrifat";
+
+  if (!user || user.name !== username || user.pass !== password) {
     res.set("WWW-Authenticate", 'Basic realm="401"');
-    return res.status(401).send("Authentication required");
+    return res.status(401).send("Authentication required.");
   }
   next();
-});
+};
 
-// Middleware for serving static files
-app.use(express.static(path.join(__dirname, "public")));
+// Middleware
+app.use(authMiddleware);
 app.use(bodyParser.json());
+app.use(express.static("public"));
 
-// Route: Get list of files
-app.get("/files", (req, res) => {
-  fs.readdir(WORKSPACE_DIR, (err, files) => {
-    if (err) {
-      console.error("Error reading directory:", err);
-      return res.status(500).send("Failed to fetch files.");
-    }
-    res.json(
-      files.map((file) => ({
-        name: file,
-        isDirectory: fs.lstatSync(path.join(WORKSPACE_DIR, file)).isDirectory(),
-      }))
-    );
-  });
-});
+// Helper to ensure repository directory exists
+const getRepoPath = () => path.join(__dirname, "cloned-repo");
 
-// Route: Get file content
-app.get("/file", (req, res) => {
-  const filePath = path.join(WORKSPACE_DIR, req.query.path || "");
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).send("File not found.");
-  }
-  fs.readFile(filePath, "utf8", (err, content) => {
-    if (err) {
-      console.error("Error reading file:", err);
-      return res.status(500).send("Failed to read file.");
-    }
-    res.send(content);
-  });
-});
-
-// Route: Save file content
-app.post("/file", (req, res) => {
-  const { filePath, content } = req.body;
-  const fullPath = path.join(WORKSPACE_DIR, filePath);
-  fs.writeFile(fullPath, content, (err) => {
-    if (err) {
-      console.error("Error saving file:", err);
-      return res.status(500).send("Failed to save file.");
-    }
-    res.send("File saved successfully.");
-    io.emit("fileUpdate", { filePath });
-  });
-});
-
-// Route: Clone a Git repository
-app.post("/clone", (req, res) => {
+// Clone Repository
+app.post("/clone", async (req, res) => {
   const { repoUrl } = req.body;
+
   if (!repoUrl) {
-    return res.status(400).send("Repository URL is required.");
+    return res.status(400).json({ error: "Repository URL is required" });
   }
-  simpleGit(WORKSPACE_DIR)
-    .clone(repoUrl)
-    .then(() => res.send("Repository cloned successfully."))
-    .catch((err) => {
-      console.error("Error cloning repository:", err);
-      res.status(500).send("Failed to clone repository.");
-    });
+
+  try {
+    const repoDir = getRepoPath();
+    await fsExtra.emptyDir(repoDir); // Clear the directory before cloning
+    await git(repoDir).clone(repoUrl, ".");
+    res.json({ message: "Repository cloned successfully!" });
+  } catch (error) {
+    console.error("Error cloning repository:", error.message);
+    res.status(500).json({ error: "Failed to clone repository." });
+  }
 });
 
-// Socket.io for real-time updates
+// List Files in Repository
+app.get("/files", async (req, res) => {
+  try {
+    const repoDir = getRepoPath();
+    const files = await fsExtra.readdir(repoDir, { withFileTypes: true });
+    const fileList = files.map((file) => ({
+      name: file.name,
+      isDirectory: file.isDirectory(),
+    }));
+    res.json(fileList);
+  } catch (error) {
+    console.error("Error listing files:", error.message);
+    res.status(500).json({ error: "Failed to list files." });
+  }
+});
+
+// Read File
+app.get("/file", async (req, res) => {
+  const { filePath } = req.query;
+
+  if (!filePath) {
+    return res.status(400).json({ error: "File path is required" });
+  }
+
+  try {
+    const repoDir = getRepoPath();
+    const absolutePath = path.join(repoDir, filePath);
+
+    // Validate if file exists
+    const exists = await fsExtra.pathExists(absolutePath);
+    if (!exists) {
+      return res.status(404).json({ error: "File not found." });
+    }
+
+    const fileContent = await fsExtra.readFile(absolutePath, "utf8");
+    res.send(fileContent);
+  } catch (error) {
+    console.error("Error reading file:", error.message);
+    res.status(500).json({ error: "Failed to read file." });
+  }
+});
+
+// Save File
+app.post("/file", async (req, res) => {
+  const { filePath, content } = req.body;
+
+  if (!filePath || content === undefined) {
+    return res.status(400).json({ error: "File path and content are required" });
+  }
+
+  try {
+    const repoDir = getRepoPath();
+    const absolutePath = path.join(repoDir, filePath);
+
+    // Ensure the directory exists before saving
+    await fsExtra.ensureFile(absolutePath);
+    await fsExtra.writeFile(absolutePath, content, "utf8");
+
+    res.json({ message: "File saved successfully!" });
+    io.emit("fileUpdate", { filePath, content });
+  } catch (error) {
+    console.error("Error saving file:", error.message);
+    res.status(500).json({ error: "Failed to save file." });
+  }
+});
+
+// Delete File
+app.delete("/file", async (req, res) => {
+  const { filePath } = req.body;
+
+  if (!filePath) {
+    return res.status(400).json({ error: "File path is required" });
+  }
+
+  try {
+    const repoDir = getRepoPath();
+    const absolutePath = path.join(repoDir, filePath);
+
+    // Validate if file exists
+    const exists = await fsExtra.pathExists(absolutePath);
+    if (!exists) {
+      return res.status(404).json({ error: "File not found." });
+    }
+
+    await fsExtra.remove(absolutePath);
+    res.json({ message: "File deleted successfully!" });
+  } catch (error) {
+    console.error("Error deleting file:", error.message);
+    res.status(500).json({ error: "Failed to delete file." });
+  }
+});
+
+// Handle Socket.io Connections
 io.on("connection", (socket) => {
-  console.log("A user connected.");
+  console.log("A user connected");
   socket.on("disconnect", () => {
-    console.log("A user disconnected.");
+    console.log("A user disconnected");
   });
 });
 
-// Start the server
+// Start Server
 server.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+});
 });
