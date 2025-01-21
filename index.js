@@ -1,118 +1,108 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const fs = require("fs-extra");
-const path = require("path");
-const simpleGit = require("simple-git");
-const { exec } = require("child_process");
-const { Server } = require("socket.io");
+const socketIO = require("socket.io");
 const http = require("http");
+const simpleGit = require("simple-git");
+const fs = require("fs");
+const path = require("path");
+const basicAuth = require("basic-auth");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = socketIO(server);
 
+// Configuration
 const PORT = process.env.PORT || 3000;
-const BASE_DIR = path.join(__dirname, "workspace");
-const LOGS_DIR = path.join(__dirname, "logs");
+const WORKSPACE_DIR = path.join(__dirname, "workspace");
 
-// Ensure required directories exist
-fs.ensureDirSync(BASE_DIR);
-fs.ensureDirSync(LOGS_DIR);
+// Create workspace directory if it doesn't exist
+if (!fs.existsSync(WORKSPACE_DIR)) {
+  fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+}
 
-// Middleware
+// Middleware for basic authentication
+app.use((req, res, next) => {
+  const user = basicAuth(req);
+  if (!user || user.name !== "rifat" || user.pass !== "mmrifat") {
+    res.set("WWW-Authenticate", 'Basic realm="401"');
+    return res.status(401).send("Authentication required");
+  }
+  next();
+});
+
+// Middleware for serving static files
+app.use(express.static(path.join(__dirname, "public")));
 app.use(bodyParser.json());
-app.use(express.static("public"));
 
-// Routes for File/Folder Management
-app.get("/files", async (req, res) => {
-  try {
-    const files = await fs.readdir(BASE_DIR, { withFileTypes: true });
+// Route: Get list of files
+app.get("/files", (req, res) => {
+  fs.readdir(WORKSPACE_DIR, (err, files) => {
+    if (err) {
+      console.error("Error reading directory:", err);
+      return res.status(500).send("Failed to fetch files.");
+    }
     res.json(
       files.map((file) => ({
-        name: file.name,
-        isDirectory: file.isDirectory(),
+        name: file,
+        isDirectory: fs.lstatSync(path.join(WORKSPACE_DIR, file)).isDirectory(),
       }))
     );
-  } catch (err) {
-    res.status(500).send("Error reading files");
-  }
+  });
 });
 
+// Route: Get file content
 app.get("/file", (req, res) => {
-  const filePath = path.join(BASE_DIR, req.query.path);
-  if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
-  res.sendFile(filePath);
+  const filePath = path.join(WORKSPACE_DIR, req.query.path || "");
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send("File not found.");
+  }
+  fs.readFile(filePath, "utf8", (err, content) => {
+    if (err) {
+      console.error("Error reading file:", err);
+      return res.status(500).send("Failed to read file.");
+    }
+    res.send(content);
+  });
 });
 
-app.post("/file", async (req, res) => {
+// Route: Save file content
+app.post("/file", (req, res) => {
   const { filePath, content } = req.body;
-  const fullPath = path.join(BASE_DIR, filePath);
-  try {
-    await fs.outputFile(fullPath, content);
-    res.send("File saved successfully");
-  } catch (err) {
-    res.status(500).send("Error saving file");
-  }
+  const fullPath = path.join(WORKSPACE_DIR, filePath);
+  fs.writeFile(fullPath, content, (err) => {
+    if (err) {
+      console.error("Error saving file:", err);
+      return res.status(500).send("Failed to save file.");
+    }
+    res.send("File saved successfully.");
+    io.emit("fileUpdate", { filePath });
+  });
 });
 
-app.post("/folder", async (req, res) => {
-  const { folderPath } = req.body;
-  const fullPath = path.join(BASE_DIR, folderPath);
-  try {
-    await fs.ensureDir(fullPath);
-    res.send("Folder created successfully");
-  } catch (err) {
-    res.status(500).send("Error creating folder");
-  }
-});
-
-app.delete("/file", async (req, res) => {
-  const { filePath } = req.body;
-  const fullPath = path.join(BASE_DIR, filePath);
-  try {
-    await fs.remove(fullPath);
-    res.send("File/Folder deleted successfully");
-  } catch (err) {
-    res.status(500).send("Error deleting file/folder");
-  }
-});
-
-// Git Integration
+// Route: Clone a Git repository
 app.post("/clone", (req, res) => {
   const { repoUrl } = req.body;
-  simpleGit(BASE_DIR)
+  if (!repoUrl) {
+    return res.status(400).send("Repository URL is required.");
+  }
+  simpleGit(WORKSPACE_DIR)
     .clone(repoUrl)
-    .then(() => res.send("Repository cloned successfully"))
-    .catch((err) => res.status(500).send(err.message));
-});
-
-// Terminal Execution
-app.post("/execute", (req, res) => {
-  const { command } = req.body;
-  exec(command, { cwd: BASE_DIR }, (err, stdout, stderr) => {
-    if (err) return res.status(500).send(err.message);
-    res.json({ stdout, stderr });
-  });
-});
-
-// WebSocket for Real-Time Collaboration
-io.on("connection", (socket) => {
-  console.log("User connected");
-  socket.on("fileChange", (data) => {
-    const { filePath, content } = data;
-    const fullPath = path.join(BASE_DIR, filePath);
-    fs.outputFile(fullPath, content, (err) => {
-      if (err) console.error("Error saving file:", err.message);
+    .then(() => res.send("Repository cloned successfully."))
+    .catch((err) => {
+      console.error("Error cloning repository:", err);
+      res.status(500).send("Failed to clone repository.");
     });
-    socket.broadcast.emit("fileUpdate", data);
-  });
+});
 
+// Socket.io for real-time updates
+io.on("connection", (socket) => {
+  console.log("A user connected.");
   socket.on("disconnect", () => {
-    console.log("User disconnected");
+    console.log("A user disconnected.");
   });
 });
 
-// Start Server
+// Start the server
 server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Server is running on http://localhost:${PORT}`);
 });
