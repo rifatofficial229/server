@@ -7,6 +7,8 @@ const http = require("http");
 const { Server } = require("socket.io");
 const basicAuth = require("basic-auth");
 const dotenv = require("dotenv");
+const { exec } = require("child_process");
+const schedule = require("node-schedule");
 
 dotenv.config();
 
@@ -17,6 +19,11 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const USERNAME = process.env.AUTH_USERNAME || "rifat";
 const PASSWORD = process.env.AUTH_PASSWORD || "mmrifat";
+const REPO_URL = process.env.REPO_URL || ""; // Default repository URL for scheduling
+
+// Middleware
+app.use(bodyParser.json());
+app.use(express.static("public"));
 
 // Authentication Middleware
 const authMiddleware = (req, res, next) => {
@@ -27,35 +34,10 @@ const authMiddleware = (req, res, next) => {
   }
   next();
 };
-
-// Middleware
 app.use(authMiddleware);
-app.use(bodyParser.json());
-app.use(express.static("public"));
 
 // Helper: Get Repository Path
 const getRepoPath = () => path.join(__dirname, "cloned-repo");
-
-// Helper: List Files Recursively
-const listFilesRecursive = async (dir) => {
-  const entries = await fsExtra.readdir(dir, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        return {
-          name: entry.name,
-          isDirectory: true,
-          path: fullPath,
-          children: await listFilesRecursive(fullPath), // Recursively list children
-        };
-      } else {
-        return { name: entry.name, isDirectory: false, path: fullPath };
-      }
-    })
-  );
-  return files;
-};
 
 // Clone Repository Endpoint
 app.post("/clone", async (req, res) => {
@@ -81,18 +63,15 @@ app.post("/clone", async (req, res) => {
 app.get("/files", async (req, res) => {
   try {
     const repoDir = getRepoPath();
-    const recursive = req.query.recursive === "true";
-    const files = recursive
-      ? await listFilesRecursive(repoDir)
-      : await fsExtra.readdir(repoDir, { withFileTypes: true }).then((entries) =>
-          entries.map((entry) => ({
-            name: entry.name,
-            isDirectory: entry.isDirectory(),
-            path: path.join(repoDir, entry.name),
-          }))
-        );
+    const entries = await fsExtra.readdir(repoDir, { withFileTypes: true });
 
-    res.json(files);
+    const fileList = entries.map((entry) => ({
+      name: entry.name,
+      isDirectory: entry.isDirectory(),
+      path: path.join(repoDir, entry.name),
+    }));
+
+    res.json(fileList);
   } catch (error) {
     console.error("Error listing files:", error.message);
     res.status(500).json({ error: "Failed to list files." });
@@ -109,8 +88,7 @@ app.get("/file", async (req, res) => {
 
   try {
     const repoDir = getRepoPath();
-    const sanitizedPath = path.normalize(filePath).replace(/^(\.\.(\/|\\|$))+/, "");
-    const absolutePath = path.join(repoDir, sanitizedPath);
+    const absolutePath = path.join(repoDir, filePath);
 
     if (!await fsExtra.pathExists(absolutePath)) {
       return res.status(404).json({ error: "File not found." });
@@ -134,8 +112,7 @@ app.post("/file", async (req, res) => {
 
   try {
     const repoDir = getRepoPath();
-    const sanitizedPath = path.normalize(filePath).replace(/^(\.\.(\/|\\|$))+/, "");
-    const absolutePath = path.join(repoDir, sanitizedPath);
+    const absolutePath = path.join(repoDir, filePath);
 
     await fsExtra.ensureFile(absolutePath);
     await fsExtra.writeFile(absolutePath, content, "utf8");
@@ -158,8 +135,7 @@ app.delete("/file", async (req, res) => {
 
   try {
     const repoDir = getRepoPath();
-    const sanitizedPath = path.normalize(filePath).replace(/^(\.\.(\/|\\|$))+/, "");
-    const absolutePath = path.join(repoDir, sanitizedPath);
+    const absolutePath = path.join(repoDir, filePath);
 
     if (!await fsExtra.pathExists(absolutePath)) {
       return res.status(404).json({ error: "File not found." });
@@ -172,6 +148,43 @@ app.delete("/file", async (req, res) => {
     res.status(500).json({ error: "Failed to delete file." });
   }
 });
+
+// Run Repository Endpoint
+app.post("/run", async (req, res) => {
+  const repoDir = getRepoPath();
+
+  try {
+    if (!fsExtra.existsSync(repoDir)) {
+      return res.status(400).json({ error: "Repository not found. Please clone a repository first." });
+    }
+
+    // Define the command to run in the cloned repository
+    const command = "node index.js"; // Adjust based on your repository's entry point
+
+    exec(command, { cwd: repoDir }, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error running repository: ${stderr}`);
+        return res.status(500).json({ error: `Failed to run repository: ${stderr}` });
+      }
+      console.log(`Repository Output: ${stdout}`);
+      res.json({ message: "Repository ran successfully!", output: stdout });
+    });
+  } catch (error) {
+    console.error("Error running repository:", error.message);
+    res.status(500).json({ error: "Failed to run repository." });
+  }
+});
+
+// Schedule Repository Cloning Every 24 Hours
+if (REPO_URL) {
+  schedule.scheduleJob("0 0 * * *", async () => {
+    console.log("Scheduled cloning started.");
+    const repoDir = getRepoPath();
+    await fsExtra.emptyDir(repoDir);
+    await git(repoDir).clone(REPO_URL, ".");
+    console.log("Scheduled repository cloning completed.");
+  });
+}
 
 // Handle WebSocket Connections
 io.on("connection", (socket) => {
