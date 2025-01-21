@@ -6,20 +6,22 @@ const git = require("simple-git");
 const http = require("http");
 const { Server } = require("socket.io");
 const basicAuth = require("basic-auth");
+const dotenv = require("dotenv");
+
+dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
+const USERNAME = process.env.AUTH_USERNAME || "rifat";
+const PASSWORD = process.env.AUTH_PASSWORD || "mmrifat";
 
 // Authentication Middleware
 const authMiddleware = (req, res, next) => {
   const user = basicAuth(req);
-  const username = "rifat";
-  const password = "mmrifat";
-
-  if (!user || user.name !== username || user.pass !== password) {
+  if (!user || user.name !== USERNAME || user.pass !== PASSWORD) {
     res.set("WWW-Authenticate", 'Basic realm="401"');
     return res.status(401).send("Authentication required.");
   }
@@ -34,6 +36,27 @@ app.use(express.static("public"));
 // Helper: Get Repository Path
 const getRepoPath = () => path.join(__dirname, "cloned-repo");
 
+// Helper: List Files Recursively
+const listFilesRecursive = async (dir) => {
+  const entries = await fsExtra.readdir(dir, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        return {
+          name: entry.name,
+          isDirectory: true,
+          path: fullPath,
+          children: await listFilesRecursive(fullPath), // Recursively list children
+        };
+      } else {
+        return { name: entry.name, isDirectory: false, path: fullPath };
+      }
+    })
+  );
+  return files;
+};
+
 // Clone Repository Endpoint
 app.post("/clone", async (req, res) => {
   const { repoUrl } = req.body;
@@ -46,6 +69,7 @@ app.post("/clone", async (req, res) => {
     const repoDir = getRepoPath();
     await fsExtra.emptyDir(repoDir); // Clear directory before cloning
     await git(repoDir).clone(repoUrl, ".");
+    io.emit("repoCloned", { message: "Repository cloned successfully!" });
     res.json({ message: "Repository cloned successfully!" });
   } catch (error) {
     console.error("Error cloning repository:", error.message);
@@ -57,12 +81,18 @@ app.post("/clone", async (req, res) => {
 app.get("/files", async (req, res) => {
   try {
     const repoDir = getRepoPath();
-    const files = await fsExtra.readdir(repoDir, { withFileTypes: true });
-    const fileList = files.map((file) => ({
-      name: file.name,
-      isDirectory: file.isDirectory(),
-    }));
-    res.json(fileList);
+    const recursive = req.query.recursive === "true";
+    const files = recursive
+      ? await listFilesRecursive(repoDir)
+      : await fsExtra.readdir(repoDir, { withFileTypes: true }).then((entries) =>
+          entries.map((entry) => ({
+            name: entry.name,
+            isDirectory: entry.isDirectory(),
+            path: path.join(repoDir, entry.name),
+          }))
+        );
+
+    res.json(files);
   } catch (error) {
     console.error("Error listing files:", error.message);
     res.status(500).json({ error: "Failed to list files." });
@@ -79,7 +109,8 @@ app.get("/file", async (req, res) => {
 
   try {
     const repoDir = getRepoPath();
-    const absolutePath = path.join(repoDir, filePath);
+    const sanitizedPath = path.normalize(filePath).replace(/^(\.\.(\/|\\|$))+/, "");
+    const absolutePath = path.join(repoDir, sanitizedPath);
 
     if (!await fsExtra.pathExists(absolutePath)) {
       return res.status(404).json({ error: "File not found." });
@@ -103,7 +134,8 @@ app.post("/file", async (req, res) => {
 
   try {
     const repoDir = getRepoPath();
-    const absolutePath = path.join(repoDir, filePath);
+    const sanitizedPath = path.normalize(filePath).replace(/^(\.\.(\/|\\|$))+/, "");
+    const absolutePath = path.join(repoDir, sanitizedPath);
 
     await fsExtra.ensureFile(absolutePath);
     await fsExtra.writeFile(absolutePath, content, "utf8");
@@ -126,7 +158,8 @@ app.delete("/file", async (req, res) => {
 
   try {
     const repoDir = getRepoPath();
-    const absolutePath = path.join(repoDir, filePath);
+    const sanitizedPath = path.normalize(filePath).replace(/^(\.\.(\/|\\|$))+/, "");
+    const absolutePath = path.join(repoDir, sanitizedPath);
 
     if (!await fsExtra.pathExists(absolutePath)) {
       return res.status(404).json({ error: "File not found." });
