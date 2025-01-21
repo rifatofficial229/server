@@ -12,6 +12,10 @@
       --text-color: #000000;
       --sidebar-bg: #f4f4f4;
       --editor-bg: #f9f9f9;
+      --primary-color: #007bff;
+      --primary-hover: #0056b3;
+      --danger-color: #dc3545;
+      --danger-hover: #a71d2a;
     }
 
     [data-theme="dark"] {
@@ -47,13 +51,16 @@
     }
 
     #file-list div {
-      padding: 5px;
+      padding: 10px;
       cursor: pointer;
       border-bottom: 1px solid #ccc;
+      display: flex;
+      align-items: center;
     }
 
     #file-list div:hover {
-      background-color: #ddd;
+      background-color: var(--primary-color);
+      color: #fff;
     }
 
     #editor {
@@ -73,19 +80,21 @@
 
     button, input {
       margin: 0 5px;
-      padding: 5px 10px;
+      padding: 10px 15px;
       border: none;
       border-radius: 5px;
+      font-size: 14px;
     }
 
     button {
-      background-color: #007bff;
+      background-color: var(--primary-color);
       color: #fff;
       cursor: pointer;
+      transition: background-color 0.3s;
     }
 
     button:hover {
-      background-color: #0056b3;
+      background-color: var(--primary-hover);
     }
 
     .dark-mode-btn {
@@ -95,6 +104,14 @@
 
     .dark-mode-btn:hover {
       background-color: #555;
+    }
+
+    .danger-btn {
+      background-color: var(--danger-color);
+    }
+
+    .danger-btn:hover {
+      background-color: var(--danger-hover);
     }
   </style>
 </head>
@@ -107,11 +124,12 @@
   </div>
   <div id="main">
     <header>
-      <h1>RIFAT WEB SERVICE</h1>
+      <h1>Personal Replit</h1>
       <div>
         <input id="repo-url" type="text" placeholder="Enter repo URL">
         <button onclick="cloneRepo()">Clone</button>
         <button class="dark-mode-btn" onclick="toggleDarkMode()">Dark Mode</button>
+        <button onclick="runRepo()">Run</button>
       </div>
     </header>
     <div id="editor"></div>
@@ -150,6 +168,7 @@
           const fileList = document.getElementById("file-list");
           fileList.innerHTML = files.map(file => `
             <div onclick="openFile('${file.name}')">
+              ${file.isDirectory ? `<i class="fas fa-folder"></i>` : `<i class="fas fa-file"></i>`}
               ${file.name}
             </div>`).join("");
         });
@@ -158,7 +177,7 @@
     // Open File
     function openFile(filePath) {
       currentFile = filePath;
-      fetch(`/file?path=${filePath}`)
+      fetch(`/file?filePath=${filePath}`)
         .then(res => res.text())
         .then(content => editor.setValue(content));
     }
@@ -173,8 +192,6 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filePath: currentFile, content })
       }).then(() => alert("File saved!"));
-
-      socket.emit("fileChange", { filePath: currentFile, content });
     }
 
     // Clone Repository
@@ -184,7 +201,16 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repoUrl })
-      }).then(() => alert("Repository cloned!"));
+      }).then(() => {
+        alert("Repository cloned!");
+        fetchFiles();
+      });
+    }
+
+    // Run Repository
+    function runRepo() {
+      alert("Running repository...");
+      // Implement additional functionality to execute or run the repository
     }
 
     // Create New File
@@ -214,16 +240,6 @@
         fetchFiles();
       });
     }
-
-    // Listen for File Updates
-    socket.on("fileUpdate", data => {
-      if (data.filePath === currentFile) {
-        alert(`File updated: ${data.filePath}`);
-        fetch(`/file?path=${data.filePath}`)
-          .then(res => res.text())
-          .then(content => editor.setValue(content));
-      }
-    });
 
     fetchFiles();
   </script>
