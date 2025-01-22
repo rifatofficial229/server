@@ -26,19 +26,6 @@
       --font-family: "Arial", sans-serif;
     }
 
-    [data-theme="dark"] {
-      --bg-color: #1e1e1e;
-      --text-color: #ffffff;
-      --sidebar-bg: #2d2d2d;
-      --editor-bg: #272727;
-      --button-bg: #17a2b8;
-      --button-hover-bg: #138496;
-      --terminal-btn-bg: #343a40;
-      --terminal-btn-hover-bg: #23272b;
-      --log-bg: #343a40;
-      --log-border: #495057;
-    }
-
     body {
       margin: 0;
       font-family: var(--font-family);
@@ -147,43 +134,29 @@
       height: 200px;
     }
 
-    .log-entry {
-      margin-bottom: 10px;
-    }
-
-    .log-entry.success {
-      color: #28a745;
-    }
-
-    .log-entry.error {
-      color: #dc3545;
-    }
-
-    .new-page-btn {
-      background-color: #ffc107;
-      color: #000;
-    }
-
-    .new-page-btn:hover {
-      background-color: #e0a800;
-    }
-
-    .log-btn {
-      background-color: #007bff;
+    .notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background-color: var(--primary-color);
       color: #fff;
+      padding: 10px 15px;
+      border-radius: 5px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+      z-index: 1000;
+      animation: fadeOut 3s forwards;
     }
 
-    .log-btn:hover {
-      background-color: #0056b3;
-    }
-
-    .terminal-btn {
-      background-color: var(--terminal-btn-bg);
-      color: var(--button-text-color);
-    }
-
-    .terminal-btn:hover {
-      background-color: var(--terminal-btn-hover-bg);
+    @keyframes fadeOut {
+      0% {
+        opacity: 1;
+      }
+      80% {
+        opacity: 1;
+      }
+      100% {
+        opacity: 0;
+      }
     }
   </style>
 </head>
@@ -201,9 +174,9 @@
         <input id="repo-url" type="text" placeholder="Enter repo URL">
         <button onclick="cloneRepo()">Clone</button>
         <button onclick="runRepo()">Run</button>
-        <button class="log-btn" onclick="viewLogs()">Logs</button>
-        <button class="new-page-btn" onclick="openNewPage()">Open New Page</button>
-        <button class="terminal-btn" onclick="openTerminal()">Open Terminal</button>
+        <button onclick="viewLogs()">Logs</button>
+        <button onclick="openNewPage()">Open New Page</button>
+        <button onclick="openTerminal()">Open Terminal</button>
       </div>
     </header>
     <div id="editor"></div>
@@ -222,8 +195,19 @@
   <script>
     const socket = io();
 
-    // Fetch Files
+    function showNotification(message) {
+      const notification = document.createElement("div");
+      notification.className = "notification";
+      notification.textContent = message;
+      document.body.appendChild(notification);
+
+      setTimeout(() => {
+        notification.remove();
+      }, 3000);
+    }
+
     function fetchFiles() {
+      showNotification("Fetching files...");
       fetch("/files")
         .then(res => res.json())
         .then(files => {
@@ -239,15 +223,59 @@
         .catch(err => console.error("Error fetching files:", err));
     }
 
-    // Open Terminal
+    function cloneRepo() {
+      const repoUrl = document.getElementById("repo-url").value;
+      showNotification("Cloning repository...");
+      fetch("/clone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repoUrl })
+      }).then(() => showNotification("Repository cloned!"))
+        .catch(err => console.error("Error cloning repository:", err));
+    }
+
+    function runRepo() {
+      showNotification("Running repository...");
+      fetch("/run", { method: "POST" })
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            showNotification(`Error: ${data.error}`);
+          } else {
+            showNotification("Repository ran successfully!");
+          }
+        })
+        .catch(err => console.error("Error running repository:", err));
+    }
+
+    function viewLogs() {
+      showNotification("Fetching logs...");
+      fetch("/logs")
+        .then(res => res.json())
+        .then(data => {
+          const logContainer = document.getElementById("log-list");
+          logContainer.innerHTML = data.map(log => {
+            return `<div>${log.message}</div>`;
+          }).join("");
+          document.getElementById("logs").style.display = "block";
+        })
+        .catch(err => console.error("Error fetching logs:", err));
+    }
+
+    function openNewPage() {
+      showNotification("Opening new page...");
+      window.open('/newpage', '_blank');
+    }
+
     function openTerminal() {
       const terminal = document.getElementById("terminal");
       terminal.style.display = terminal.style.display === "none" ? "block" : "none";
+      showNotification("Opening terminal...");
     }
 
-    // Run Command
     function runCommand() {
       const command = document.getElementById("terminal-input").value;
+      showNotification(`Running command: ${command}`);
       fetch("/terminal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
