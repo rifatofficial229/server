@@ -41,6 +41,12 @@ app.use(authMiddleware);
 // Helper: Get Repository Path
 const getRepoPath = () => path.join(__dirname, "cloned-repo");
 
+// Add Log Entry
+const addLog = (type, message) => {
+  logs.push({ type, message, timestamp: new Date().toISOString() });
+  if (logs.length > 100) logs.shift(); // Keep logs at a max of 100 entries
+};
+
 // Clone Repository Endpoint
 app.post("/clone", async (req, res) => {
   const { repoUrl } = req.body;
@@ -54,9 +60,11 @@ app.post("/clone", async (req, res) => {
     await fsExtra.emptyDir(repoDir); // Clear directory before cloning
     await git(repoDir).clone(repoUrl, ".");
     io.emit("repoCloned", { message: "Repository cloned successfully!" });
+    addLog("success", "Repository cloned successfully.");
     res.json({ message: "Repository cloned successfully!" });
   } catch (error) {
     console.error("Error cloning repository:", error.message);
+    addLog("error", `Failed to clone repository: ${error.message}`);
     res.status(500).json({ error: "Failed to clone repository." });
   }
 });
@@ -76,16 +84,16 @@ app.post("/run", async (req, res) => {
     exec(command, { cwd: repoDir }, (error, stdout, stderr) => {
       if (error) {
         console.error(`Error running repository: ${stderr}`);
-        logs.push({ type: "error", message: stderr });
+        addLog("error", stderr);
         return res.status(500).json({ error: `Failed to run repository: ${stderr}` });
       }
       console.log(`Repository Output: ${stdout}`);
-      logs.push({ type: "success", message: stdout });
+      addLog("success", stdout);
       res.json({ message: "Repository ran successfully!", output: stdout });
     });
   } catch (error) {
     console.error("Error running repository:", error.message);
-    logs.push({ type: "error", message: error.message });
+    addLog("error", `Failed to run repository: ${error.message}`);
     res.status(500).json({ error: "Failed to run repository." });
   }
 });
@@ -95,7 +103,7 @@ app.get("/logs", (req, res) => {
   res.json(logs);
 });
 
-// List Files Endpoint
+// List Files in Root Directory Endpoint
 app.get("/files", async (req, res) => {
   try {
     const repoDir = getRepoPath();
@@ -104,13 +112,63 @@ app.get("/files", async (req, res) => {
     const fileList = entries.map((entry) => ({
       name: entry.name,
       isDirectory: entry.isDirectory(),
-      path: path.join(repoDir, entry.name),
+      path: entry.name,
     }));
 
     res.json(fileList);
   } catch (error) {
     console.error("Error listing files:", error.message);
     res.status(500).json({ error: "Failed to list files." });
+  }
+});
+
+// List Files in Folder Endpoint
+app.get("/folder", async (req, res) => {
+  const { folderPath } = req.query;
+
+  if (!folderPath) {
+    return res.status(400).json({ error: "Folder path is required." });
+  }
+
+  try {
+    const absolutePath = path.join(getRepoPath(), folderPath);
+    const entries = await fsExtra.readdir(absolutePath, { withFileTypes: true });
+
+    const folderContents = entries.map((entry) => ({
+      name: entry.name,
+      isDirectory: entry.isDirectory(),
+      path: path.join(folderPath, entry.name),
+    }));
+
+    res.json(folderContents);
+  } catch (error) {
+    console.error("Error listing folder contents:", error.message);
+    res.status(500).json({ error: "Failed to list folder contents." });
+  }
+});
+
+// Terminal Command Execution Endpoint
+app.post("/terminal", async (req, res) => {
+  const { command } = req.body;
+
+  if (!command) {
+    return res.status(400).json({ error: "Command is required." });
+  }
+
+  try {
+    exec(command, { cwd: getRepoPath() }, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error executing command: ${stderr}`);
+        addLog("error", stderr);
+        return res.status(500).json({ error: stderr });
+      }
+      addLog("success", stdout);
+      res.json({ output: stdout });
+    });
+  } catch (error) {
+    console.error("Error executing terminal command:", error.message);
+    addLog("error", `Failed to execute command: ${error.message}`);
+    res.status(500).json({ error: "Failed to execute command." });
   }
 });
 
@@ -126,14 +184,12 @@ app.get("/file", async (req, res) => {
     const repoDir = getRepoPath();
     const absolutePath = path.join(repoDir, filePath);
 
-    // Check if the path is a directory
     const stat = await fsExtra.stat(absolutePath);
 
     if (stat.isDirectory()) {
       return res.status(400).json({ error: "Cannot read a directory. Please select a file." });
     }
 
-    // If it's a file, read the content
     if (await fsExtra.pathExists(absolutePath)) {
       const fileContent = await fsExtra.readFile(absolutePath, "utf8");
       res.send(fileContent);
@@ -200,7 +256,7 @@ if (REPO_URL) {
     const repoDir = getRepoPath();
     await fsExtra.emptyDir(repoDir);
     await git(repoDir).clone(REPO_URL, ".");
-    console.log("Scheduled repository cloning completed.");
+    addLog("success", "Scheduled repository cloning completed.");
   });
 }
 
